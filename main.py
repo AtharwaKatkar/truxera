@@ -15,10 +15,11 @@ from datetime import datetime, timedelta
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from bson import ObjectId
-import httpx, os, certifi, asyncio
+import httpx, os, certifi, asyncio, hashlib
 from dotenv import load_dotenv
 from services.scraper import analyze_website_content_async, scrape_penalty
 from services.moderation import validate_review_text, spam_score, auto_status, DUPLICATE_WINDOW_HOURS
+from services.search_limit import init_quota, check_and_increment, reset_quota
 
 load_dotenv()
 
@@ -37,22 +38,32 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 # ── DATABASE ──────────────────────────────────────────────
-client          = AsyncIOMotorClient(MONGO_URL, tls=True, tlsCAFile=certifi.where(),
-                                     serverSelectionTimeoutMS=3000)
+client = AsyncIOMotorClient(
+    MONGO_URL,
+    tls=True,
+    tlsCAFile=certifi.where(),
+    serverSelectionTimeoutMS=8000,
+    connectTimeoutMS=15000,
+    socketTimeoutMS=30000,
+)
 db              = client[DB_NAME]
 websites        = db["websites"]
-reports         = db["reports"]       # scam/fraud reports (existing)
-reviews         = db["reviews"]       # NEW: star-rated reviews
-review_votes    = db["review_votes"]  # NEW: helpful votes
-mod_flags       = db["mod_flags"]     # NEW: moderation flags
+reports         = db["reports"]
+reviews         = db["reviews"]
+review_votes    = db["review_votes"]
+mod_flags       = db["mod_flags"]
 users           = db["users"]
+search_quota    = db["search_quota"]
+
+# Wire search limit service
+init_quota(search_quota)
 
 # ── AUTH ──────────────────────────────────────────────────
 pwd_ctx       = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
 
-def hash_pw(pw):              return pwd_ctx.hash(pw)
-def verify_pw(p, h):          return pwd_ctx.verify(p, h)
+def hash_pw(pw):     return pwd_ctx.hash(pw)
+def verify_pw(p, h): return pwd_ctx.verify(p, h)
 def make_token(email):
     return jwt.encode({"sub": email,
                        "exp": datetime.utcnow() + timedelta(minutes=TOKEN_EXP)},
@@ -321,12 +332,13 @@ async def register(body: UserRegister):
     return {"access_token": make_token(body.email), "token_type": "bearer"}
 
 @app.post("/auth/login", tags=["Auth"])
-async def login(form: OAuth2PasswordRequestForm = Depends()):
+async def login(request: Request, form: OAuth2PasswordRequestForm = Depends()):
     try: user = await users.find_one({"email": form.username})
     except: raise HTTPException(503, "Database unavailable")
     if not user or not verify_pw(form.password, user["hashed_password"]):
         raise HTTPException(401, "Invalid email or password")
     if user.get("is_banned"): raise HTTPException(403, "Account suspended")
+    await reset_quota(request)   # clear guest search count on login
     return {"access_token": make_token(user["email"]), "token_type": "bearer"}
 
 @app.get("/auth/me", tags=["Auth"])
@@ -338,8 +350,12 @@ async def me(user=Depends(require_login)):
 
 # ── WEBSITE CHECK ─────────────────────────────────────────
 @app.get("/website/{domain}", tags=["Websites"])
-async def get_website(domain: str):
+async def get_website(domain: str, request: Request,
+                      user=Depends(current_user_or_none)):
     domain = clean_domain(domain)
+
+    # ── Search limit check ────────────────────────────────
+    quota = await check_and_increment(request, is_logged_in=user is not None)
 
     whois, gsb, scrape = await asyncio.gather(
         fetch_whois(domain), check_gsb(domain),
@@ -404,6 +420,7 @@ async def get_website(domain: str):
             "recent_reports": recent_rpts,
         },
         "rating_summary": rating_summary,
+        "searches_remaining": quota["remaining"],  # None = unlimited (logged in)
     }
 
 # ── REVIEWS ───────────────────────────────────────────────
@@ -688,6 +705,8 @@ async def _make_indexes():
         await reviews.create_index([("ip", 1), ("domain", 1), ("created_at", -1)])
         await review_votes.create_index([("review_id", 1), ("ip", 1)], unique=True)
         await users.create_index("email", unique=True)
+        await search_quota.create_index("ip", unique=True)
+        await search_quota.create_index("window_start", expireAfterSeconds=86400)
         print("✓ Indexes ready")
     except Exception as e:
         print(f"Index warning: {e}")

@@ -200,8 +200,89 @@ function ReportModal({ onClose, defaultDomain = "" }) {
   );
 }
 
+// ── SEARCH LIMIT MODAL ────────────────────────────────────
+function SearchLimitModal({ onClose, onSignIn, onSignUp }) {
+  return (
+    <motion.div
+      variants={modalOverlay} initial="hidden" animate="visible" exit="exit"
+      style={{ position:"fixed", inset:0, background:"rgba(15,23,42,0.75)",
+                backdropFilter:"blur(6px)", zIndex:300,
+                display:"flex", alignItems:"center", justifyContent:"center", padding:16 }}
+      onClick={onClose}>
+      <motion.div
+        variants={modalPanel} initial="hidden" animate="visible" exit="exit"
+        style={{ background:"#fff", borderRadius:22, padding:36, width:"100%",
+                  maxWidth:420, textAlign:"center",
+                  boxShadow:"0 28px 80px rgba(0,0,0,0.22)" }}
+        onClick={e => e.stopPropagation()}>
+
+        {/* Icon */}
+        <motion.div
+          animate={{ rotate:[0,10,-10,0], scale:[1,1.1,1] }}
+          transition={{ duration:0.6, delay:0.2 }}
+          style={{ fontSize:52, marginBottom:16 }}>🔒</motion.div>
+
+        <div style={{ fontFamily:"'Syne',sans-serif", fontSize:22, fontWeight:800,
+                      marginBottom:10 }}>
+          Sign in to continue
+        </div>
+        <p style={{ fontSize:15, color:C.textSub, lineHeight:1.65, marginBottom:8 }}>
+          You've used your <strong>2 free searches</strong>.
+        </p>
+        <p style={{ fontSize:13, color:C.textMuted, lineHeight:1.6, marginBottom:28 }}>
+          Create a free account for <strong>unlimited searches</strong>, review submissions,
+          and scam reports.
+        </p>
+
+        {/* Perks */}
+        <div style={{ background:"#F8FAFC", border:"1px solid #E2E8F0", borderRadius:14,
+                      padding:"14px 18px", marginBottom:24, textAlign:"left" }}>
+          {[
+            "✅ Unlimited website checks",
+            "📋 Submit scam reports",
+            "⭐ Write and read reviews",
+            "🔔 Get alerts on watched sites",
+          ].map(item => (
+            <div key={item} style={{ fontSize:13, color:C.textSub, padding:"4px 0",
+                                     fontWeight:500 }}>{item}</div>
+          ))}
+        </div>
+
+        {/* Buttons */}
+        <div style={{ display:"flex", gap:10 }}>
+          <motion.button
+            whileHover={{ scale:1.02, boxShadow:`0 6px 20px ${C.redGlow}` }}
+            whileTap={{ scale:0.97 }}
+            onClick={onSignIn}
+            style={{ flex:1, background:C.red, color:"#fff", border:"none",
+                     padding:"13px", borderRadius:11, fontSize:14, fontWeight:700,
+                     cursor:"pointer", fontFamily:"inherit",
+                     boxShadow:`0 4px 12px ${C.redGlow}` }}>
+            Sign in
+          </motion.button>
+          <motion.button
+            whileHover={{ scale:1.02 }} whileTap={{ scale:0.97 }}
+            onClick={onSignUp}
+            style={{ flex:1, background:C.dark, color:"#fff", border:"none",
+                     padding:"13px", borderRadius:11, fontSize:14, fontWeight:700,
+                     cursor:"pointer", fontFamily:"inherit" }}>
+            Sign up free
+          </motion.button>
+        </div>
+
+        <button onClick={onClose}
+                style={{ marginTop:14, background:"none", border:"none",
+                         fontSize:13, color:C.textMuted, cursor:"pointer",
+                         fontFamily:"inherit" }}>
+          Maybe later
+        </button>
+      </motion.div>
+    </motion.div>
+  );
+}
+
 // ── SIGN IN MODAL ─────────────────────────────────────────
-function SignInModal({ onClose }) {
+function SignInModal({ onClose, onSuccess }) {
   const [mode, setMode]       = useState("login");   // "login" | "register"
   const [form, setForm]       = useState({ email:"", password:"", username:"" });
   const [status, setStatus]   = useState("idle");
@@ -235,7 +316,9 @@ function SignInModal({ onClose }) {
       }
       setToken(data.access_token);
       localStorage.setItem("truxera_token", data.access_token);
+      localStorage.setItem("truxera_email", form.email);
       setStatus("success");
+      if (onSuccess) setTimeout(() => onSuccess(form.email), 1800);
     } catch (err) {
       setErrMsg(err.message || "Something went wrong.");
       setStatus("error");
@@ -453,6 +536,8 @@ export default function HomePage() {
   const [result, setResult]           = useState(null);
   const [searching, setSearching]     = useState(false);
   const [searchErr, setSearchErr]     = useState("");
+  const [showLimitModal, setShowLimitModal] = useState(false);
+  const [searchesLeft, setSearchesLeft]     = useState(null);
   const [tab, setTab]                 = useState("feed");
   const [showModal, setShowModal]     = useState(false);
   const [modalDomain, setModalDomain] = useState("");
@@ -462,8 +547,26 @@ export default function HomePage() {
   const [feedLoading, setFeedLoading] = useState(true);
   const [top, setTop]                 = useState([]);
   const [topLoading, setTopLoading]   = useState(true);
+  const [user, setUser]               = useState(() => {
+    const t = localStorage.getItem("truxera_token");
+    const e = localStorage.getItem("truxera_email");
+    return t ? { token:t, email:e } : null;
+  });
   const resultRef                     = useRef(null);
   const howItWorksRef                 = useRef(null);
+
+  function handleSignInSuccess(email) {
+    const token = localStorage.getItem("truxera_token");
+    setUser({ token, email });
+    setSearchesLeft(null);
+    setShowSignIn(false);
+  }
+
+  function handleSignOut() {
+    localStorage.removeItem("truxera_token");
+    localStorage.removeItem("truxera_email");
+    setUser(null);
+  }
 
   useEffect(() => {
     fetch(`${API}/reports/recent?limit=20`)
@@ -479,12 +582,29 @@ export default function HomePage() {
     if (!query.trim()) return;
     setSearching(true); setResult(null); setSearchErr("");
     try {
-      const res  = await fetch(`${API}/website/${encodeURIComponent(query.trim())}`);
+      const token = localStorage.getItem("truxera_token");
+      const headers = token ? { "Authorization": `Bearer ${token}` } : {};
+      const res  = await fetch(`${API}/website/${encodeURIComponent(query.trim())}`,
+                               { headers });
       const data = await res.json();
+
+      // Guest limit reached
+      if (res.status === 429 && data.detail?.error === "LOGIN_REQUIRED") {
+        setShowLimitModal(true);
+        setSearchesLeft(0);
+        return;
+      }
+
       if (!res.ok) throw new Error(data.detail || "Check failed");
       setResult(data);
+
+      // Update remaining count from response
+      if (data.searches_remaining !== undefined) {
+        setSearchesLeft(data.searches_remaining);
+      }
     } catch (err) {
-      setSearchErr(err.message || "Could not check this website. Please try again.");
+      if (err.message !== "Check failed")
+        setSearchErr(err.message || "Could not check this website. Please try again.");
     } finally {
       setSearching(false);
       setTimeout(() => resultRef.current?.scrollIntoView({ behavior:"smooth", block:"start" }), 150);
@@ -563,10 +683,36 @@ export default function HomePage() {
                 onMouseLeave={e => e.currentTarget.style.color=C.textSub}>
             Report a scam
           </span>
-          <Btn variant="dark" style={{ padding:"8px 18px", fontSize:13 }}
-               onClick={() => setShowSignIn(true)}>
-            Sign in
-          </Btn>
+          {user ? (
+            <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+              <div style={{ display:"flex", alignItems:"center", gap:8,
+                            background:"#F1F5F9", borderRadius:99, padding:"6px 14px" }}>
+                <div style={{ width:26, height:26, borderRadius:"50%", background:C.red,
+                              display:"flex", alignItems:"center", justifyContent:"center",
+                              fontSize:11, fontWeight:700, color:"#fff", flexShrink:0 }}>
+                  {(user.email||"U")[0].toUpperCase()}
+                </div>
+                <span style={{ fontSize:13, fontWeight:500, color:C.text, maxWidth:140,
+                               overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                  {user.email}
+                </span>
+              </div>
+              <button onClick={handleSignOut} style={{
+                background:"transparent", border:`1.5px solid ${C.border}`,
+                padding:"7px 14px", borderRadius:9, fontSize:13, fontWeight:500,
+                cursor:"pointer", fontFamily:"inherit", color:C.textSub, transition:"all 0.2s",
+              }}
+              onMouseEnter={e => { e.currentTarget.style.borderColor=C.danger; e.currentTarget.style.color=C.danger; }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor=C.border; e.currentTarget.style.color=C.textSub; }}>
+                Sign out
+              </button>
+            </div>
+          ) : (
+            <Btn variant="dark" style={{ padding:"8px 18px", fontSize:13 }}
+                 onClick={() => setShowSignIn(true)}>
+              Sign in
+            </Btn>
+          )}
         </div>
       </nav>
 
@@ -663,6 +809,21 @@ export default function HomePage() {
           <p style={{ marginTop:12, fontSize:13, color:C.textMuted }}>
             Free · No sign-up needed · Results based on real data only
           </p>
+
+          {/* Remaining searches hint — only shown to guests */}
+          {searchesLeft !== null && (
+            <motion.div
+              initial={{ opacity:0, y:6 }} animate={{ opacity:1, y:0 }}
+              style={{ marginTop:10, display:"inline-flex", alignItems:"center", gap:6,
+                       background: searchesLeft === 0 ? "#FEF2F2" : "#FFFBEB",
+                       border: `1px solid ${searchesLeft === 0 ? "#FCA5A5" : "#FCD34D"}`,
+                       borderRadius:99, padding:"5px 14px", fontSize:13, fontWeight:600,
+                       color: searchesLeft === 0 ? C.danger : "#D97706" }}>
+              {searchesLeft === 0
+                ? "🔒 No free searches left — sign in to continue"
+                : `🔍 ${searchesLeft} free search${searchesLeft !== 1 ? "es" : ""} remaining`}
+            </motion.div>
+          )}
         </div>
       </div>
 
@@ -1033,7 +1194,22 @@ export default function HomePage() {
     </AnimatePresence>
 
     <AnimatePresence>
-      {showSignIn && <SignInModal onClose={() => setShowSignIn(false)} />}
+      {showSignIn && (
+        <SignInModal
+          onClose={() => setShowSignIn(false)}
+          onSuccess={handleSignInSuccess}
+        />
+      )}
+    </AnimatePresence>
+
+    <AnimatePresence>
+      {showLimitModal && (
+        <SearchLimitModal
+          onClose={() => setShowLimitModal(false)}
+          onSignIn={() => { setShowLimitModal(false); setShowSignIn(true); }}
+          onSignUp={() => { setShowLimitModal(false); setShowSignIn(true); }}
+        />
+      )}
     </AnimatePresence>
     </div>
   );
