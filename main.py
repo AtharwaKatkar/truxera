@@ -20,6 +20,8 @@ from dotenv import load_dotenv
 from services.scraper import analyze_website_content_async, scrape_penalty
 from services.moderation import validate_review_text, spam_score, auto_status, DUPLICATE_WINDOW_HOURS
 from services.search_limit import init_quota, check_and_increment, reset_quota
+from services.technical_checks import run_technical_checks, extract_tech_signals
+from services.cache import get_cached_trust, set_cached_trust, invalidate_trust_cache
 
 load_dotenv()
 
@@ -172,7 +174,14 @@ async def get_rating_summary(domain: str) -> dict:
 # ── TRUST SCORE ───────────────────────────────────────────
 def build_trust_result(domain, whois, gsb, scrape,
                         n_reports, n_upvotes, total_lost,
-                        rating_summary: dict) -> dict:
+                        rating_summary: dict,
+                        tech: dict = None) -> dict:
+    """
+    Builds the full honest trust result.
+    - Only penalises on REAL data.
+    - Missing data reduces confidence, not score.
+    - tech = output of run_technical_checks() — SSL/DNS/HTTPS signals.
+    """
     score   = 100
     reasons = []
     checks  = {}
@@ -180,13 +189,17 @@ def build_trust_result(domain, whois, gsb, scrape,
     whois_available  = bool(whois)
     gsb_available    = gsb is not None
     scrape_available = scrape.get("scrape_success", False)
+    tech_available   = bool(tech and (
+        tech.get("ssl", {}).get("has_ssl") is not None or
+        tech.get("dns", {}).get("resolves") is not None
+    ))
 
-    # WHOIS
+    # ── WHOIS ────────────────────────────────────────────
     if whois_available:
         age = whois.get("domain_age_days")
         if age is not None:
             checks["domain_age_days"] = age
-            if age < 90:   score -= 40; reasons.append(f"Domain only {age} days old — very new")
+            if age < 90:    score -= 40; reasons.append(f"Domain only {age} days old — very new and suspicious")
             elif age < 180: score -= 20; reasons.append(f"Domain less than 6 months old ({age} days)")
             elif age < 365: score -= 10; reasons.append(f"Domain less than 1 year old ({age} days)")
         if whois.get("registrar"): checks["registrar"] = whois["registrar"]
@@ -194,7 +207,7 @@ def build_trust_result(domain, whois, gsb, scrape,
             score -= 5; checks["whois_private"] = True
             reasons.append("Domain owner identity hidden (WHOIS privacy)")
 
-    # GSB
+    # ── GSB ───────────────────────────────────────────────
     if gsb_available:
         checks["google_safe_browsing_checked"] = True
         if gsb.get("flagged"):
@@ -206,56 +219,78 @@ def build_trust_result(domain, whois, gsb, scrape,
     else:
         checks["google_safe_browsing_checked"] = False
 
-    # Scraper
+    # ── TECHNICAL CHECKS (SSL / DNS / HTTPS) ─────────────
+    if tech_available:
+        tech_penalty, tech_reasons, tech_checks = extract_tech_signals(tech)
+        score -= tech_penalty
+        reasons.extend(tech_reasons)
+        checks.update(tech_checks)
+
+    # ── SCRAPER ───────────────────────────────────────────
     if scrape_available:
         pen = scrape_penalty(scrape)
         score -= pen
-        if not scrape.get("has_contact_page"): reasons.append("No contact page found")
-        if not scrape.get("has_about_page"):   reasons.append("No about page found")
-        if not scrape.get("has_privacy_page"): reasons.append("No privacy policy found")
+        if not scrape.get("has_contact_page"): reasons.append("No contact page found on the website")
+        if not scrape.get("has_about_page"):   reasons.append("No about/company page found")
+        if not scrape.get("has_privacy_page"): reasons.append("No privacy policy page found")
         if scrape.get("content_length", 0) < 200: reasons.append("Website has very little content")
         kws = scrape.get("suspicious_keywords", [])
-        if kws: reasons.append(f"Suspicious phrases: {', '.join(kws[:3])}")
+        if kws: reasons.append(f"Suspicious phrases detected: {', '.join(kws[:3])}")
         checks.update({
-            "scrape_available": True,
-            "has_contact_page": scrape.get("has_contact_page", False),
-            "has_about_page":   scrape.get("has_about_page", False),
-            "has_privacy_page": scrape.get("has_privacy_page", False),
+            "scrape_available":    True,
+            "has_contact_page":    scrape.get("has_contact_page", False),
+            "has_about_page":      scrape.get("has_about_page", False),
+            "has_privacy_page":    scrape.get("has_privacy_page", False),
+            "has_terms_page":      scrape.get("has_terms_page", False),
+            "has_refund_page":     scrape.get("has_refund_page", False),
             "suspicious_keywords": scrape.get("suspicious_keywords", []),
-            "site_title": scrape.get("title") or None,
+            "site_title":          scrape.get("title") or None,
+            "meta_description":    scrape.get("meta_description") or None,
+            "content_length":      scrape.get("content_length", 0),
+            "external_links":      scrape.get("external_links_count", 0),
         })
     else:
         checks["scrape_available"] = False
 
-    # Community reports (scam reports)
+    # ── COMMUNITY REPORTS ────────────────────────────────
     if n_reports > 0:
         score -= min(n_reports * 5, 30)
-        reasons.append(f"{n_reports} fraud report(s) from community")
+        reasons.append(f"{n_reports} fraud report(s) submitted by the community")
     if n_upvotes > 0:
         score -= min(n_upvotes * 2, 20)
 
-    # Rating signal (max ±15 pts, only if >= 3 reviews)
+    # ── RATING SIGNAL ────────────────────────────────────
     reviews_have_data = rating_summary.get("total_reviews", 0) >= 3
     if reviews_have_data:
         avg = rating_summary["average_rating"]
         if avg is not None:
-            if avg >= 4.0:   score += 10; reasons.append(f"High community rating ({avg}/5)")
-            elif avg >= 3.0: pass         # neutral
-            elif avg >= 2.0: score -= 10; reasons.append(f"Low community rating ({avg}/5)")
-            else:            score -= 15; reasons.append(f"Very low community rating ({avg}/5)")
+            if avg >= 4.0:   score += 10; reasons.append(f"High community rating ({avg}/5 stars)")
+            elif avg >= 3.0: pass
+            elif avg >= 2.0: score -= 10; reasons.append(f"Low community rating ({avg}/5 stars)")
+            else:            score -= 15; reasons.append(f"Very low community rating ({avg}/5 stars)")
 
     score = max(0, min(score, 100))
 
-    # Confidence
-    review_signal = reviews_have_data
-    signals = sum([whois_available, gsb_available, scrape_available,
-                   n_reports > 0, review_signal])
-    if signals == 0:       confidence = "none"
-    elif signals == 1:     confidence = "low"
-    elif signals == 2:     confidence = "preliminary"
-    elif n_reports > 0 or review_signal: confidence = "community_backed"
-    else:                  confidence = "technical"
+    # ── CONFIDENCE ───────────────────────────────────────
+    n_signals = sum([
+        whois_available, gsb_available, scrape_available, tech_available,
+        n_reports > 0, reviews_have_data,
+    ])
+    if n_signals == 0:                              confidence = "none"
+    elif n_signals == 1:                            confidence = "low"
+    elif n_signals <= 2:                            confidence = "preliminary"
+    elif n_reports > 0 or reviews_have_data:        confidence = "community_backed"
+    else:                                           confidence = "technical"
 
+    # ── ANALYSIS TYPE (honest UI label) ──────────────────
+    if n_reports == 0 and not reviews_have_data:
+        if n_signals >= 3:   analysis_type = "preliminary_technical"
+        elif n_signals >= 1: analysis_type = "limited_technical"
+        else:                analysis_type = "no_data"
+    else:
+        analysis_type = "community_backed"
+
+    # ── LEVEL ────────────────────────────────────────────
     if score >= 80:   level = "safe"
     elif score >= 50: level = "caution"
     elif score >= 20: level = "risky"
@@ -263,12 +298,12 @@ def build_trust_result(domain, whois, gsb, scrape,
 
     return {
         "domain": domain, "trust_score": score, "trust_level": level,
-        "confidence": confidence,
+        "confidence": confidence, "analysis_type": analysis_type,
         "verified_checks": checks,
         "data_availability": {
             "whois": whois_available, "safe_browsing": gsb_available,
-            "scrape": scrape_available, "community_reports": n_reports > 0,
-            "reviews": reviews_have_data,
+            "scrape": scrape_available, "technical_checks": tech_available,
+            "community_reports": n_reports > 0, "reviews": reviews_have_data,
         },
         "reasons": reasons,
     }
@@ -358,9 +393,18 @@ async def get_website(domain: str, request: Request,
     # ── Search limit check ────────────────────────────────
     quota = await check_and_increment(request, is_logged_in=user is not None)
 
-    whois, gsb, scrape = await asyncio.gather(
+    # ── Redis cache (guests only — logged-in users get fresh data) ──
+    if user is None:
+        cached = await get_cached_trust(domain)
+        if cached:
+            cached["searches_remaining"] = quota["remaining"]
+            return cached
+
+    # ── Run ALL checks in parallel ────────────────────────
+    whois, gsb, scrape, tech = await asyncio.gather(
         fetch_whois(domain), check_gsb(domain),
         analyze_website_content_async(f"https://{domain}"),
+        run_technical_checks(domain),
     )
 
     n_reports, n_upvotes, total_lost = 0, 0, 0.0
@@ -386,12 +430,14 @@ async def get_website(domain: str, request: Request,
 
     rating_summary = await get_rating_summary(domain)
     trust = build_trust_result(domain, whois, gsb, scrape,
-                                n_reports, n_upvotes, total_lost, rating_summary)
+                                n_reports, n_upvotes, total_lost, rating_summary,
+                                tech=tech)
 
     try:
         await websites.update_one({"domain": domain},
             {"$set": {**trust, "whois_raw": whois, "gsb_raw": gsb,
-                      "scrape_raw": scrape, "updated_at": datetime.utcnow()}},
+                      "scrape_raw": scrape, "tech_raw": tech,
+                      "updated_at": datetime.utcnow()}},
             upsert=True)
     except: pass
 
@@ -411,7 +457,7 @@ async def get_website(domain: str, request: Request,
             })
     except: pass
 
-    return {
+    result_payload = {
         **trust,
         "community_data": {
             "reports_count": n_reports,
@@ -421,8 +467,19 @@ async def get_website(domain: str, request: Request,
             "recent_reports": recent_rpts,
         },
         "rating_summary": rating_summary,
-        "searches_remaining": quota["remaining"],  # None = unlimited (logged in)
+        "technical_analysis": {
+            "ssl":  tech.get("ssl", {})  if tech else {},
+            "http": tech.get("http", {}) if tech else {},
+            "dns":  tech.get("dns", {})  if tech else {},
+        },
+        "searches_remaining": quota["remaining"],
     }
+
+    # Cache for guest users (1 hour TTL)
+    if user is None:
+        await set_cached_trust(domain, result_payload)
+
+    return result_payload
 
 # ── REVIEWS ───────────────────────────────────────────────
 @app.post("/website/{domain}/review", tags=["Reviews"])
@@ -493,6 +550,9 @@ async def submit_review(domain: str, body: ReviewCreate,
             await users.update_one({"_id": user["_id"]},
                                    {"$inc": {"reviews_submitted": 1, "reputation": 3}})
         except: pass
+
+    # Invalidate trust cache so next search gets fresh data
+    await invalidate_trust_cache(domain)
 
     return {
         "id": str(result.inserted_id),

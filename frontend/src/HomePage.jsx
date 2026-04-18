@@ -468,7 +468,9 @@ function ResultCard({ result, onReport }) {
       <div style={{ height:1, background:"#F1F5F9", margin:"24px 0" }} />
       <ReasonsSection reasons={result.reasons} trustScore={result.trust_score}
                       confidence={result.confidence} />
-      <VerifiedChecks checks={result.verified_checks} availability={result.data_availability} />
+      <VerifiedChecks checks={result.verified_checks}
+                      availability={result.data_availability}
+                      technicalAnalysis={result.technical_analysis} />
 
       {/* Share + public page link */}
       <ShareButtons domain={result.domain} trustScore={result.trust_score}

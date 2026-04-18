@@ -94,10 +94,17 @@ export function TrustSummary({ result }) {
       label:"Upvotes", empty:"No upvotes", color:C.info },
   ];
 
-  const confBadgeType =
-    result.confidence === "community_backed" ? "community" :
-    result.confidence === "none"             ? "nodata"    :
-    result.confidence === "low"              ? "limited"   : "info";
+  // Analysis type → honest badge label
+  const ANALYSIS_LABELS = {
+    no_data:               { label:"No verified data yet",          type:"nodata"   },
+    limited_technical:     { label:"Limited technical checks",      type:"limited"  },
+    preliminary_technical: { label:"Preliminary technical analysis", type:"info"     },
+    technical:             { label:"Technical analysis only",        type:"info"     },
+    community_backed:      { label:"Community-backed analysis",      type:"community"},
+  };
+  const analysisInfo = ANALYSIS_LABELS[result.analysis_type] || ANALYSIS_LABELS[result.confidence] || { label: cm.label, type: "info" };
+
+  const confBadgeType = analysisInfo.type;
 
   return (
     <div>
@@ -120,7 +127,7 @@ export function TrustSummary({ result }) {
           </svg>
           {result.domain}
         </div>
-        <Badge type={confBadgeType} dot>{cm.label}</Badge>
+        <Badge type={confBadgeType} dot>{analysisInfo.label}</Badge>
         {cd.today_reports > 0 && (
           <motion.div
             initial={{ scale:0.7, opacity:0 }}

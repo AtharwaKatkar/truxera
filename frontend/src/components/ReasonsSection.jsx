@@ -28,14 +28,17 @@ function classify(text) {
   return REASON_ICONS.default;
 }
 
-export function ReasonsSection({ reasons = [], trustScore, confidence }) {
-  if (confidence === "none") return (
+export function ReasonsSection({ reasons = [], trustScore, confidence, analysisType }) {
+  if (confidence === "none" || analysisType === "no_data") return (
     <div style={{ marginBottom:24 }}>
       <SectionTitle>Risk Analysis</SectionTitle>
-      <EmptyState icon="🔍" title="Analysis pending"
-        message="Configure WHOIS and Google Safe Browsing API keys to enable automated risk checks." />
+      <EmptyState icon="🔍" title="No verified data yet"
+        message="Configure WHOIS and Google Safe Browsing API keys to enable automated risk checks. Community reviews will appear here once submitted." />
     </div>
   );
+
+  // Honest label when only technical checks ran
+  const isTechnicalOnly = analysisType === "preliminary_technical" || analysisType === "limited_technical";
 
   if (reasons.length === 0) {
     return trustScore >= 80 ? (
@@ -108,6 +111,27 @@ export function ReasonsSection({ reasons = [], trustScore, confidence }) {
           );
         })}
       </motion.div>
+
+      {/* Honest notice when no community data exists */}
+      {isTechnicalOnly && (
+        <motion.div
+          initial={{ opacity:0, y:6 }} animate={{ opacity:1, y:0 }}
+          transition={{ delay:0.3 }}
+          style={{ marginTop:12, background:"#EFF6FF", border:"1px solid #BFDBFE",
+                   borderRadius:10, padding:"10px 14px",
+                   display:"flex", alignItems:"flex-start", gap:10 }}>
+          <span style={{ fontSize:16, flexShrink:0 }}>ℹ️</span>
+          <div>
+            <div style={{ fontSize:12, fontWeight:700, color:"#1D4ED8", marginBottom:2 }}>
+              Preliminary technical analysis
+            </div>
+            <div style={{ fontSize:12, color:"#1E40AF", lineHeight:1.6 }}>
+              Based on live technical checks only — domain age, SSL, security headers, and site content.
+              No community reviews yet. Results will improve as users submit experiences.
+            </div>
+          </div>
+        </motion.div>
+      )}
     </div>
   );
 }
