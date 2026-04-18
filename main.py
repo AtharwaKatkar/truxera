@@ -22,6 +22,8 @@ from services.moderation import validate_review_text, spam_score, auto_status, D
 from services.search_limit import init_quota, check_and_increment, reset_quota
 from services.technical_checks import run_technical_checks, extract_tech_signals
 from services.cache import get_cached_trust, set_cached_trust, invalidate_trust_cache
+from services.domain_extractor import extract_domain, is_natural_language
+from services.score_explainer import build_explanation
 
 load_dotenv()
 
@@ -472,6 +474,18 @@ async def get_website(domain: str, request: Request,
             "http": tech.get("http", {}) if tech else {},
             "dns":  tech.get("dns", {})  if tech else {},
         },
+        "explanation": build_explanation(
+            trust_score      = trust["trust_score"],
+            trust_level      = trust["trust_level"],
+            analysis_type    = trust["analysis_type"],
+            verified_checks  = trust["verified_checks"],
+            reasons          = trust["reasons"],
+            n_reports        = n_reports,
+            n_reviews        = rating_summary.get("total_reviews", 0),
+            avg_rating       = rating_summary.get("average_rating"),
+            data_availability= trust["data_availability"],
+        ),
+        "last_checked_at": datetime.utcnow().isoformat(),
         "searches_remaining": quota["remaining"],
     }
 
@@ -914,6 +928,100 @@ async def recently_reviewed(limit: int = 10):
             })
             if len(result) >= limit:
                 break
+    except: pass
+    return result
+
+# ── SMART SEARCH (natural language input) ────────────────
+@app.post("/search", tags=["Websites"])
+async def smart_search(request: Request, body: dict,
+                        user=Depends(current_user_or_none)):
+    """
+    Accepts natural language: "is xyz.com safe?" or "check abc.in"
+    Extracts domain and redirects to the trust check.
+    """
+    raw = (body.get("query") or "").strip()
+    if not raw:
+        raise HTTPException(400, "Query is required")
+
+    domain = extract_domain(raw)
+    if not domain:
+        raise HTTPException(422, {
+            "error": "DOMAIN_NOT_FOUND",
+            "message": "Could not extract a domain from your input. Try typing a domain like 'example.com'",
+            "input": raw,
+        })
+
+    # Delegate to the main check endpoint
+    from fastapi.testclient import TestClient  # avoid circular import
+    # Instead, just return the domain so frontend can call /website/{domain}
+    return {
+        "domain":    domain,
+        "extracted": True,
+        "original":  raw,
+        "was_natural_language": is_natural_language(raw),
+    }
+
+# ── TRENDING (last 7 days) ────────────────────────────────
+@app.get("/websites/trending", tags=["Websites"])
+async def trending_sites(limit: int = 10):
+    """Sites with most reports in the last 7 days."""
+    result = []
+    try:
+        week_ago = datetime.utcnow() - timedelta(days=7)
+        pipeline = [
+            {"$match": {"created_at": {"$gte": week_ago}, "status": {"$ne": "rejected"}}},
+            {"$group": {"_id": "$domain", "count": {"$sum": 1}}},
+            {"$sort": {"count": -1}},
+            {"$limit": limit},
+        ]
+        async for doc in reports.aggregate(pipeline):
+            site = await websites.find_one({"domain": doc["_id"]})
+            result.append({
+                "domain":      doc["_id"],
+                "reports_7d":  doc["count"],
+                "trust_score": site.get("trust_score") if site else None,
+                "trust_level": site.get("trust_level") if site else None,
+            })
+    except: pass
+    return result
+
+@app.get("/websites/recently-checked", tags=["Websites"])
+async def recently_checked(limit: int = 10):
+    """Domains checked most recently."""
+    result = []
+    try:
+        async for s in websites.find({}).sort("updated_at", -1).limit(limit):
+            result.append({
+                "domain":       s["domain"],
+                "trust_score":  s.get("trust_score"),
+                "trust_level":  s.get("trust_level"),
+                "last_checked": fmt_dt(s.get("updated_at")),
+            })
+    except: pass
+    return result
+
+# ── TOP REVIEWS FOR DOMAIN ────────────────────────────────
+@app.get("/website/{domain}/top-reviews", tags=["Reviews"])
+async def top_reviews(domain: str):
+    """Returns top helpful positive and negative reviews."""
+    domain = clean_domain(domain)
+    result = {"top_positive": None, "top_negative": None}
+    try:
+        for rtype in ("positive", "negative"):
+            r = await reviews.find_one(
+                {"domain": domain, "status": "approved", "review_type": rtype},
+                sort=[("helpful_votes", -1)]
+            )
+            if r:
+                result[f"top_{rtype}"] = {
+                    "id":            str(r["_id"]),
+                    "title":         r["title"],
+                    "review_text":   r["review_text"][:300],
+                    "rating":        r["rating"],
+                    "helpful_votes": r.get("helpful_votes", 0),
+                    "reviewer_name": r.get("reviewer_name") or "Anonymous",
+                    "created_at":    fmt_dt(r.get("created_at")),
+                }
     except: pass
     return result
 

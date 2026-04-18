@@ -19,6 +19,10 @@ import { RatingCard } from "./components/RatingCard.jsx";
 import { ReviewList } from "./components/ReviewList.jsx";
 import { ReviewForm } from "./components/ReviewForm.jsx";
 import { ShareButtons } from "./components/ShareButtons.jsx";
+import { SmartSearchInput } from "./components/SmartSearchInput.jsx";
+import { ScoreExplanation } from "./components/ScoreExplanation.jsx";
+import { TopReviews } from "./components/TopReviews.jsx";
+import { TrendingSection } from "./components/TrendingSection.jsx";
 
 const API = "";
 
@@ -466,8 +470,17 @@ function ResultCard({ result, onReport }) {
       <TrustSummary result={result} />
 
       <div style={{ height:1, background:"#F1F5F9", margin:"24px 0" }} />
+
+      {/* Score explanation */}
+      <ScoreExplanation
+        explanation={result.explanation}
+        lastCheckedAt={result.last_checked_at}
+      />
+
       <ReasonsSection reasons={result.reasons} trustScore={result.trust_score}
-                      confidence={result.confidence} />
+                      confidence={result.confidence}
+                      analysisType={result.analysis_type}
+                      sectionTitle={result.explanation?.section_title} />
       <VerifiedChecks checks={result.verified_checks}
                       availability={result.data_availability}
                       technicalAnalysis={result.technical_analysis} />
@@ -511,6 +524,7 @@ function ResultCard({ result, onReport }) {
 
       {/* Reviews */}
       <div style={{ marginBottom:24 }}>
+        <TopReviews domain={result.domain} />
         <ReviewList domain={result.domain} onWriteReview={() => setShowReviewForm(true)} />
       </div>
 
@@ -590,31 +604,27 @@ export default function HomePage() {
       .catch(() => setTop([])).finally(() => setTopLoading(false));
   }, []);
 
-  async function search(e) {
-    e.preventDefault();
-    if (!query.trim()) return;
+  async function search(e, domainOverride) {
+    if (e) e.preventDefault();
+    const raw = domainOverride || query.trim();
+    if (!raw) return;
+
+    // Client-side domain extraction
+    const domain = extractDomainClient(raw) || raw;
+
     setSearching(true); setResult(null); setSearchErr("");
     try {
       const token = localStorage.getItem("truxera_token");
       const headers = token ? { "Authorization": `Bearer ${token}` } : {};
-      const res  = await fetch(`${API}/website/${encodeURIComponent(query.trim())}`,
-                               { headers });
+      const res  = await fetch(`${API}/website/${encodeURIComponent(domain)}`, { headers });
       const data = await res.json();
 
-      // Guest limit reached
       if (res.status === 429 && data.detail?.error === "LOGIN_REQUIRED") {
-        setShowLimitModal(true);
-        setSearchesLeft(0);
-        return;
+        setShowLimitModal(true); setSearchesLeft(0); return;
       }
-
       if (!res.ok) throw new Error(data.detail || "Check failed");
       setResult(data);
-
-      // Update remaining count from response
-      if (data.searches_remaining !== undefined) {
-        setSearchesLeft(data.searches_remaining);
-      }
+      if (data.searches_remaining !== undefined) setSearchesLeft(data.searches_remaining);
     } catch (err) {
       if (err.message !== "Check failed")
         setSearchErr(err.message || "Could not check this website. Please try again.");
@@ -622,6 +632,22 @@ export default function HomePage() {
       setSearching(false);
       setTimeout(() => resultRef.current?.scrollIntoView({ behavior:"smooth", block:"start" }), 150);
     }
+  }
+
+  // Client-side domain extractor (mirrors backend)
+  function extractDomainClient(text) {
+    text = text.trim();
+    if (!text) return null;
+    if (text.startsWith("http://") || text.startsWith("https://")) {
+      try { return new URL(text).hostname.replace(/^www\./, ""); } catch {}
+    }
+    const tlds = "com|in|co\\.in|org|net|io|gov|edu|info|biz|co|app|ai|tech|store|shop|online|site|xyz|club|live|news|finance|money|loan|jobs|work|pay|bank";
+    const re = new RegExp(`(?:https?://)?(?:www\\.)?([a-zA-Z0-9][a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9]?(?:\\.[a-zA-Z0-9][a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9]?)*\\.(?:${tlds})(?:\\.[a-z]{2})?)`, "i");
+    const m = text.match(re);
+    if (m) return m[1].toLowerCase().replace(/^www\./, "").split("/")[0];
+    if (!text.includes(" ") && text.includes("."))
+      return text.toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").split("/")[0];
+    return null;
   }
 
   async function upvote(id) {
@@ -772,58 +798,33 @@ export default function HomePage() {
               fontSize:"clamp(36px,6vw,60px)", fontWeight:800,
               lineHeight:1.06, letterSpacing:"-2.5px", marginBottom:20,
             }}>
-            Check any website.<br />
+            Check any website<br />
             <span style={{
               background:`linear-gradient(135deg, ${C.red}, #F97316)`,
               WebkitBackgroundClip:"text", WebkitTextFillColor:"transparent",
-            }}>Before you pay.</span>
+            }}>before you trust it.</span>
           </motion.h1>
 
           <motion.p
             variants={heroSub} initial="hidden" animate="visible"
             style={{ fontSize:18, color:C.textSub, lineHeight:1.7, marginBottom:40,
                       maxWidth:500, margin:"0 auto 40px" }}>
-            Trust scores from WHOIS, Google Safe Browsing, and verified community reports.
-            Every number is real.
+            Real-time trust intelligence — SSL, domain age, blacklist checks, and community reports.
+            Type a domain or ask naturally. Every result is honest.
           </motion.p>
 
-          {/* Search */}
-          <motion.form
-            variants={heroSearch} initial="hidden" animate="visible"
-            onSubmit={search} style={{
-            display:"flex", gap:10, alignItems:"center",
-            background:"#fff", border:`2px solid ${C.border}`,
-            borderRadius:16, padding:"10px 10px 10px 20px",
-            boxShadow:"0 4px 24px rgba(0,0,0,0.08)",
-            transition:"border-color 0.2s, box-shadow 0.2s",
-          }}
-          onFocus={e => { e.currentTarget.style.borderColor=C.red; e.currentTarget.style.boxShadow=`0 4px 24px ${C.redGlow}`; }}
-          onBlur={e => { e.currentTarget.style.borderColor=C.border; e.currentTarget.style.boxShadow="0 4px 24px rgba(0,0,0,0.08)"; }}>
-            <svg width="20" height="20" viewBox="0 0 20 20" fill="none"
-                 style={{ flexShrink:0, color:C.textMuted }}>
-              <circle cx="9" cy="9" r="6" stroke="currentColor" strokeWidth="1.5"/>
-              <path d="M13.5 13.5L17 17" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-            </svg>
-            <input value={query} onChange={e => setQuery(e.target.value)}
-                   placeholder="Enter website e.g. quickjobs247.in"
-                   style={{ flex:1, border:"none", outline:"none", fontSize:16,
-                            fontFamily:"inherit", background:"transparent", color:C.text }} />
-            <button type="submit" disabled={searching} style={{
-              background: searching ? C.textMuted : C.red,
-              color:"#fff", border:"none", padding:"12px 28px", borderRadius:10,
-              fontSize:15, fontWeight:600, cursor: searching ? "not-allowed" : "pointer",
-              fontFamily:"inherit", whiteSpace:"nowrap",
-              boxShadow:`0 4px 12px ${C.redGlow}`,
-              transition:"all 0.2s",
-            }}>
-              {searching ? "Checking…" : "Check now →"}
-            </button>
-          </motion.form>
+          {/* Smart Search */}
+          <motion.div variants={heroSearch} initial="hidden" animate="visible">
+            <SmartSearchInput
+              onSearch={(domain) => { setQuery(domain); search(null, domain); }}
+              searching={searching}
+            />
+          </motion.div>
           <p style={{ marginTop:12, fontSize:13, color:C.textMuted }}>
-            Free · No sign-up needed · Results based on real data only
+            Free · No sign-up needed · Type a domain or ask naturally
           </p>
 
-          {/* Remaining searches hint — only shown to guests */}
+          {/* Remaining searches hint */}
           {searchesLeft !== null && (
             <motion.div
               initial={{ opacity:0, y:6 }} animate={{ opacity:1, y:0 }}
@@ -927,151 +928,12 @@ export default function HomePage() {
                     gap:28, alignItems:"start" }}
            className="grid-1-mobile">
 
-        {/* FEED */}
+        {/* FEED — replaced with TrendingSection */}
         <div>
-          {/* Tabs */}
-          <div style={{ display:"flex", gap:4, marginBottom:20,
-                        background:"#F1F5F9", borderRadius:12, padding:4 }}>
-            {[["feed","Recent reports"],["top","Most reported"]].map(([v,l]) => (
-              <button key={v} onClick={() => setTab(v)} style={{
-                flex:1, padding:"9px 16px", borderRadius:9, border:"none",
-                fontSize:13, fontWeight:600, cursor:"pointer", fontFamily:"inherit",
-                background: tab===v ? "#fff" : "transparent",
-                color: tab===v ? C.text : C.textMuted,
-                boxShadow: tab===v ? "0 1px 4px rgba(0,0,0,0.08)" : "none",
-                transition:"all 0.2s",
-              }}>{l}</button>
-            ))}
-          </div>
-
-          {tab === "feed" && (
-            feedLoading
-              ? <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
-                  {[1,2,3].map(i => <CardSkeleton key={i} />)}
-                </div>
-              : feed.length > 0
-                ? <motion.div
-                    key="feed"
-                    variants={staggerContainer(0.06)}
-                    initial="hidden" animate="visible"
-                    style={{ display:"flex", flexDirection:"column", gap:10 }}>
-                    {feed.map((r, i) => {
-                      const cat = CATS[r.scam_category] || CATS.other;
-                      return (
-                        <motion.div
-                          key={r.id||i}
-                          variants={staggerItem}
-                          whileHover={{ y:-2, boxShadow:"0 8px 24px rgba(0,0,0,0.08)", borderColor:"#CBD5E1" }}
-                          style={{
-                            background:"#fff", border:`1px solid ${C.border}`,
-                            borderRadius:14, padding:20,
-                          }}>
-                          <div style={{ display:"flex", alignItems:"flex-start",
-                                        justifyContent:"space-between", gap:12, marginBottom:12 }}>
-                            <div style={{ flex:1 }}>
-                              <div style={{ display:"flex", alignItems:"center", gap:8,
-                                            marginBottom:8, flexWrap:"wrap" }}>
-                                <span style={{ fontSize:12, padding:"3px 10px", borderRadius:99,
-                                               background:"#F1F5F9", color:C.textSub, fontWeight:600 }}>
-                                  {r.domain}
-                                </span>
-                                <span style={{ fontSize:12, padding:"3px 10px", borderRadius:99,
-                                               background:"#F1F5F9", color:C.textSub, fontWeight:500 }}>
-                                  {cat.icon} {cat.label}
-                                </span>
-                                <Badge type="pending">Pending</Badge>
-                              </div>
-                              <p style={{ fontSize:14, fontWeight:500, lineHeight:1.45, color:C.text }}>
-                                {r.title}
-                              </p>
-                            </div>
-                            {r.amount_paid != null && (
-                              <div style={{ textAlign:"right", flexShrink:0 }}>
-                                <div style={{ fontSize:17, fontWeight:800, color:C.danger }}>
-                                  {inr(r.amount_paid)}
-                                </div>
-                                <div style={{ fontSize:10, color:C.textMuted }}>reported lost</div>
-                              </div>
-                            )}
-                          </div>
-                          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between" }}>
-                            <span style={{ fontSize:12, color:C.textMuted }}>{ago(r.created_at)}</span>
-                            <motion.button
-                              whileHover={{ scale:1.04 }} whileTap={{ scale:0.96 }}
-                              onClick={() => upvote(r.id)}
-                              style={{
-                                border:`1.5px solid ${upvoted[r.id] ? "#6EE7B7" : C.border}`,
-                                background: upvoted[r.id] ? "#ECFDF5" : "transparent",
-                                borderRadius:8, padding:"5px 12px", fontSize:12,
-                                cursor: upvoted[r.id] ? "default" : "pointer",
-                                color: upvoted[r.id] ? C.safe : C.textSub,
-                                fontFamily:"inherit", display:"flex", alignItems:"center", gap:5,
-                              }}>
-                              👍 {(r.upvotes||0)+(upvoted[r.id]?1:0)} this happened to me
-                            </motion.button>
-                          </div>
-                        </motion.div>
-                      );
-                    })}
-                  </motion.div>
-                : <EmptyState icon="📋" title="No community reports yet"
-                    message="Be the first to report a scam website and help protect others in India."
-                    action={{ label:"Report a scam", onClick:() => openReport() }} />
-          )}
-
-          {tab === "top" && (
-            topLoading
-              ? <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-                  {[1,2,3].map(i => <CardSkeleton key={i} />)}
-                </div>
-              : top.length > 0
-                ? <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-                    {top.map((s, i) => {
-                      const lvc = LEVEL_TOKENS[s.trust_level] || LEVEL_TOKENS.dangerous;
-                      return (
-                        <div key={s.domain} style={{
-                          background:"#fff", border:`1px solid ${C.border}`,
-                          borderRadius:14, padding:20,
-                          display:"flex", alignItems:"center", gap:16,
-                          transition:"all 0.2s",
-                        }}
-                        onMouseEnter={e => { e.currentTarget.style.borderColor=C.borderHover; e.currentTarget.style.boxShadow="0 6px 20px rgba(0,0,0,0.07)"; }}
-                        onMouseLeave={e => { e.currentTarget.style.borderColor=C.border; e.currentTarget.style.boxShadow=""; }}>
-                          <span style={{ fontSize:22, fontWeight:800, color:"#E2E8F0",
-                                         fontFamily:"'Syne',sans-serif", minWidth:36 }}>
-                            #{i+1}
-                          </span>
-                          <div style={{ flex:1 }}>
-                            <div style={{ display:"flex", alignItems:"center", gap:8,
-                                          marginBottom:8, flexWrap:"wrap" }}>
-                              <span style={{ fontSize:14, fontWeight:600 }}>{s.domain}</span>
-                              <span style={{ fontSize:11, padding:"2px 9px", borderRadius:99,
-                                             background:lvc.bg, color:lvc.color,
-                                             border:`1px solid ${lvc.border}`, fontWeight:600 }}>
-                                {lvc.icon} {lvc.label}
-                              </span>
-                            </div>
-                            <div style={{ background:"#F1F5F9", borderRadius:99, height:6, overflow:"hidden" }}>
-                              <div style={{ height:"100%", borderRadius:99, background:lvc.color,
-                                            width:`${s.trust_score??0}%`,
-                                            transition:"width 0.8s ease" }} />
-                            </div>
-                          </div>
-                          <div style={{ textAlign:"right", flexShrink:0 }}>
-                            <div style={{ fontSize:15, fontWeight:700, color:C.danger }}>
-                              {s.reports_count} report{s.reports_count!==1?"s":""}
-                            </div>
-                            <div style={{ fontSize:11, color:C.textMuted }}>
-                              {s.total_loss ? inr(s.total_loss)+" lost" : "Loss data unavailable"}
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                : <EmptyState icon="📊" title="No sites with community reports yet"
-                    message="The leaderboard will populate as users submit verified reports." />
-          )}
+          <TrendingSection onDomainClick={(domain) => {
+            setQuery(domain);
+            search(null, domain);
+          }} />
         </div>
 
         {/* SIDEBAR */}

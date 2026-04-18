@@ -28,7 +28,7 @@ function classify(text) {
   return REASON_ICONS.default;
 }
 
-export function ReasonsSection({ reasons = [], trustScore, confidence, analysisType }) {
+export function ReasonsSection({ reasons = [], trustScore, confidence, analysisType, sectionTitle }) {
   if (confidence === "none" || analysisType === "no_data") return (
     <div style={{ marginBottom:24 }}>
       <SectionTitle>Risk Analysis</SectionTitle>
@@ -74,7 +74,7 @@ export function ReasonsSection({ reasons = [], trustScore, confidence, analysisT
 
   return (
     <div style={{ marginBottom:24 }}>
-      <SectionTitle>Why this site scored low</SectionTitle>
+      <SectionTitle>{sectionTitle || "Why this site scored low"}</SectionTitle>
       <motion.div
         variants={staggerContainer(0.06)}
         initial="hidden" animate="visible"
