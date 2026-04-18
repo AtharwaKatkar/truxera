@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { StarPicker } from "./StarRating.jsx";
 import { C } from "../design/tokens.js";
 import { staggerContainer, staggerItem, slideDown } from "../design/motion.js";
+import { ProofUpload } from "./ProofUpload.jsx";
 
 const API = "";
 
@@ -29,6 +30,7 @@ export function ReviewForm({ domain, onSuccess, onCancel }) {
     rating:0, title:"", review_text:"", review_type:"neutral",
     issue_type:"", reviewer_name:"", is_anonymous:false,
     used_or_paid:false, payment_successful:"", received_service:"",
+    proof_urls:[],
   });
   const [status, setStatus]     = useState("idle");
   const [errMsg, setErrMsg]     = useState("");
@@ -59,6 +61,7 @@ export function ReviewForm({ domain, onSuccess, onCancel }) {
           is_anonymous:form.is_anonymous, used_or_paid:form.used_or_paid,
           payment_successful:form.payment_successful===""?null:form.payment_successful==="true",
           received_service:form.received_service===""?null:form.received_service==="true",
+          proof_urls: form.proof_urls || [],
         }),
       });
       const data = await res.json();
@@ -229,6 +232,11 @@ export function ReviewForm({ domain, onSuccess, onCancel }) {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Proof upload */}
+      <motion.div variants={staggerItem}>
+        <ProofUpload onUploaded={urls => set("proof_urls", urls)} />
+      </motion.div>
 
       {/* Error */}
       <AnimatePresence>

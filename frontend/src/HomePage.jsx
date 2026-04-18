@@ -18,6 +18,7 @@ import { CommunityReports } from "./components/CommunityReports.jsx";
 import { RatingCard } from "./components/RatingCard.jsx";
 import { ReviewList } from "./components/ReviewList.jsx";
 import { ReviewForm } from "./components/ReviewForm.jsx";
+import { ShareButtons } from "./components/ShareButtons.jsx";
 
 const API = "";
 
@@ -468,6 +469,16 @@ function ResultCard({ result, onReport }) {
       <ReasonsSection reasons={result.reasons} trustScore={result.trust_score}
                       confidence={result.confidence} />
       <VerifiedChecks checks={result.verified_checks} availability={result.data_availability} />
+
+      {/* Share + public page link */}
+      <ShareButtons domain={result.domain} trustScore={result.trust_score}
+                    trustLevel={result.trust_level} />
+      <div style={{ marginBottom:16 }}>
+        <a href={`/site/${result.domain}`} target="_blank" rel="noopener noreferrer"
+           style={{ fontSize:13, color:C.info, textDecoration:"none", fontWeight:500 }}>
+          🔗 View public page for {result.domain} →
+        </a>
+      </div>
 
       <div style={{ height:1, background:"#F1F5F9", margin:"24px 0" }} />
 

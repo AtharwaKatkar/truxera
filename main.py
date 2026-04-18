@@ -300,12 +300,13 @@ class ReviewCreate(BaseModel):
     title: str = Field(..., min_length=3, max_length=120)
     review_text: str = Field(..., min_length=20, max_length=2000)
     review_type: Literal["positive", "negative", "neutral"] = "neutral"
-    issue_type: Optional[str] = None   # payment_fraud / not_delivered / genuine_purchase / etc.
+    issue_type: Optional[str] = None
     reviewer_name: Optional[str] = None
     is_anonymous: bool = False
-    used_or_paid: bool = False         # "I actually used/paid on this site"
+    used_or_paid: bool = False
     payment_successful: Optional[bool] = None
     received_service: Optional[bool] = None
+    proof_urls: List[str] = []
 
     @field_validator("rating")
     @classmethod
@@ -473,8 +474,9 @@ async def submit_review(domain: str, body: ReviewCreate,
         "used_or_paid":      body.used_or_paid,
         "payment_successful":body.payment_successful,
         "received_service":  body.received_service,
+        "proof_urls":        body.proof_urls,
         "helpful_votes":     0,
-        "verified_flag":     False,
+        "verified_flag":     len(body.proof_urls) > 0,  # pre-flag for admin review
         "spam_score":        sp,
         "status":            status,
         "created_at":        datetime.utcnow(),
@@ -688,6 +690,173 @@ async def scrape_domain(domain: str):
     data   = await analyze_website_content_async(f"https://{domain}")
     return {**data, "penalty_applied": scrape_penalty(data)}
 
+# ── PROOF UPLOAD ──────────────────────────────────────────
+import shutil, uuid
+from fastapi import UploadFile, File as FastAPIFile
+
+UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "uploads")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp", "application/pdf"}
+MAX_UPLOAD_MB = 5
+
+@app.post("/upload/proof", tags=["Uploads"])
+async def upload_proof(file: UploadFile = FastAPIFile(...),
+                        user=Depends(current_user_or_none)):
+    if file.content_type not in ALLOWED_TYPES:
+        raise HTTPException(400, "Unsupported file type. Use JPG, PNG, WebP or PDF.")
+    content = await file.read()
+    if len(content) > MAX_UPLOAD_MB * 1024 * 1024:
+        raise HTTPException(400, f"File too large. Max {MAX_UPLOAD_MB}MB.")
+    ext      = file.filename.rsplit(".", 1)[-1] if "." in file.filename else "bin"
+    filename = f"{uuid.uuid4().hex}.{ext}"
+    path     = os.path.join(UPLOAD_DIR, filename)
+    with open(path, "wb") as f:
+        f.write(content)
+    return {"url": f"/uploads/{filename}", "filename": filename}
+
+# Serve uploaded files
+app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+
+# ── ADMIN ROUTES ──────────────────────────────────────────
+async def require_admin(token: str = Depends(oauth2_scheme)):
+    user = await current_user_or_none(token)
+    if not user or not user.get("is_admin"):
+        raise HTTPException(403, "Admin access required")
+    return user
+
+@app.get("/admin/stats", tags=["Admin"])
+async def admin_stats(admin=Depends(require_admin)):
+    try:
+        return {
+            "total_reviews":  await reviews.count_documents({}),
+            "pending_reviews":await reviews.count_documents({"status": "pending"}),
+            "flagged_reviews":await reviews.count_documents({"status": "flagged"}),
+            "total_reports":  await reports.count_documents({}),
+            "total_users":    await users.count_documents({}),
+            "total_websites": await websites.count_documents({}),
+        }
+    except Exception as e:
+        raise HTTPException(503, str(e))
+
+@app.get("/admin/reviews/pending", tags=["Admin"])
+async def admin_pending_reviews(limit: int = 20, admin=Depends(require_admin)):
+    result = []
+    try:
+        async for r in reviews.find(
+            {"status": {"$in": ["pending", "flagged"]}}
+        ).sort("created_at", -1).limit(limit):
+            result.append({
+                "id":          str(r["_id"]),
+                "domain":      r["domain"],
+                "rating":      r["rating"],
+                "title":       r["title"],
+                "review_text": r["review_text"][:200],
+                "review_type": r["review_type"],
+                "spam_score":  r.get("spam_score", 0),
+                "status":      r["status"],
+                "proof_urls":  r.get("proof_urls", []),
+                "ip":          r.get("ip", ""),
+                "created_at":  fmt_dt(r.get("created_at")),
+            })
+    except Exception as e:
+        raise HTTPException(503, str(e))
+    return result
+
+@app.post("/admin/review/{review_id}/approve", tags=["Admin"])
+async def admin_approve_review(review_id: str, admin=Depends(require_admin)):
+    try:
+        await reviews.update_one(
+            {"_id": ObjectId(review_id)},
+            {"$set": {"status": "approved", "verified_flag": True,
+                      "updated_at": datetime.utcnow()}}
+        )
+        return {"message": "Review approved"}
+    except Exception as e:
+        raise HTTPException(503, str(e))
+
+@app.post("/admin/review/{review_id}/reject", tags=["Admin"])
+async def admin_reject_review(review_id: str, admin=Depends(require_admin)):
+    try:
+        await reviews.update_one(
+            {"_id": ObjectId(review_id)},
+            {"$set": {"status": "rejected", "updated_at": datetime.utcnow()}}
+        )
+        return {"message": "Review rejected"}
+    except Exception as e:
+        raise HTTPException(503, str(e))
+
+@app.post("/review/{review_id}/report", tags=["Reviews"])
+async def report_review(review_id: str, request: Request):
+    """Flag a review as suspicious."""
+    ip = get_client_ip(request)
+    try:
+        existing = await mod_flags.find_one({"target_id": review_id, "ip": ip})
+        if existing:
+            raise HTTPException(429, "You already reported this review")
+        await mod_flags.insert_one({
+            "target_id": review_id, "target_type": "review",
+            "ip": ip, "created_at": datetime.utcnow()
+        })
+        flag_count = await mod_flags.count_documents({"target_id": review_id})
+        if flag_count >= 3:
+            await reviews.update_one(
+                {"_id": ObjectId(review_id)},
+                {"$set": {"status": "flagged"}}
+            )
+        return {"message": "Review reported"}
+    except HTTPException: raise
+    except Exception as e:
+        raise HTTPException(503, str(e))
+
+# ── TRENDING / RECENT ─────────────────────────────────────
+@app.get("/websites/trending", tags=["Websites"])
+async def trending_sites(limit: int = 10):
+    """Sites with most reports in the last 7 days."""
+    result = []
+    try:
+        week_ago = datetime.utcnow() - timedelta(days=7)
+        pipeline = [
+            {"$match": {"created_at": {"$gte": week_ago}, "status": {"$ne": "rejected"}}},
+            {"$group": {"_id": "$domain", "count": {"$sum": 1}}},
+            {"$sort": {"count": -1}},
+            {"$limit": limit},
+        ]
+        async for doc in reports.aggregate(pipeline):
+            site = await websites.find_one({"domain": doc["_id"]})
+            result.append({
+                "domain":       doc["_id"],
+                "reports_7d":   doc["count"],
+                "trust_score":  site.get("trust_score") if site else None,
+                "trust_level":  site.get("trust_level") if site else None,
+            })
+    except: pass
+    return result
+
+@app.get("/websites/recently-reviewed", tags=["Websites"])
+async def recently_reviewed(limit: int = 10):
+    """Domains that received reviews most recently."""
+    result = []
+    try:
+        async for r in reviews.find(
+            {"status": "approved"}
+        ).sort("created_at", -1).limit(limit * 3):
+            domain = r["domain"]
+            if any(x["domain"] == domain for x in result):
+                continue
+            site = await websites.find_one({"domain": domain})
+            result.append({
+                "domain":      domain,
+                "trust_score": site.get("trust_score") if site else None,
+                "trust_level": site.get("trust_level") if site else None,
+                "last_review": fmt_dt(r.get("created_at")),
+                "rating":      r.get("rating"),
+            })
+            if len(result) >= limit:
+                break
+    except: pass
+    return result
+
 # ── STARTUP ───────────────────────────────────────────────
 @app.on_event("startup")
 async def startup():
@@ -718,4 +887,7 @@ if os.path.exists(DIST):
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def spa(full_path: str):
+        # Don't serve SPA for API or upload paths
+        if full_path.startswith(("api/", "uploads/", "admin/")):
+            raise HTTPException(404)
         return FileResponse(os.path.join(DIST, "index.html"))
