@@ -12,6 +12,7 @@ def calc_score(
     scrape_pen: int = 0,
     avg_rating: float | None = None,
     n_reviews: int = 0,
+    ai_content_penalty: int = 0,
 ) -> int:
     score = 100
 
@@ -33,6 +34,9 @@ def calc_score(
 
     # Scraper signals
     score -= min(scrape_pen, 15)
+
+    # AI content penalty
+    score -= min(ai_content_penalty, 20)
 
     # Rating signal (only if ≥ 3 reviews)
     if n_reviews >= 3 and avg_rating is not None:
