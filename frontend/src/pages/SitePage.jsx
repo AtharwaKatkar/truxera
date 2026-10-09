@@ -106,6 +106,30 @@ export default function SitePage() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}>
 
+            {/* Typosquatting warning banner */}
+            {result.typosquat_warning && result.typosquat_warning.is_suspicious && (
+              <div style={{
+                background: C.cautionBg,
+                border: '1.5px solid ' + C.cautionBorder,
+                borderRadius: 14,
+                padding: '14px 18px',
+                marginBottom: 20,
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: 12,
+              }}>
+                <span style={{ fontSize: 18, flexShrink: 0 }}>⚠️</span>
+                <div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: C.caution }}>
+                    Possible Typosquatting Warning
+                  </div>
+                  <div style={{ fontSize: 13, color: C.textSub, marginTop: 4 }}>
+                    {result.typosquat_warning.warning}
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Page heading */}
             <div style={{ marginBottom: 24 }}>
               <h1 style={{ fontFamily: "'Syne',sans-serif", fontSize: "clamp(22px,4vw,32px)",
