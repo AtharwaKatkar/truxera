@@ -138,6 +138,37 @@ export function TrustSummary({ result }) {
         )}
       </motion.div>
 
+      {/* AI Analysis card */}
+      {result.ai_summary && typeof result.ai_summary === 'string' && result.ai_summary.trim().length > 0 && (
+        <div style={{
+          background: C.infoBg,
+          border: '1.5px solid ' + C.infoBorder,
+          borderRadius: 14,
+          padding: '14px 18px',
+          marginBottom: 20,
+          display: 'flex',
+          alignItems: 'flex-start',
+          gap: 12,
+        }}>
+          <span style={{ fontSize: 18, flexShrink: 0 }}>🤖</span>
+          <div>
+            <div style={{
+              fontSize: 12,
+              fontWeight: 700,
+              color: C.info,
+              textTransform: 'uppercase',
+              letterSpacing: '0.5px',
+              marginBottom: 4,
+            }}>
+              AI Analysis
+            </div>
+            <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.5 }}>
+              {result.ai_summary}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Score ring + level + stats */}
       <div style={{ display:"flex", alignItems:"center", gap:28, flexWrap:"wrap", marginBottom:24 }}>
         <ScoreRing score={result.trust_score} color={lv.color} glow={lv.glow} />
