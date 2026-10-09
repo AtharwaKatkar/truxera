@@ -3,6 +3,9 @@
 #  Full review + rating + trust score platform
 # ============================================================
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
@@ -16,7 +19,6 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 from bson import ObjectId
 import httpx, os, certifi, asyncio, hashlib
-from dotenv import load_dotenv
 from services.scraper import analyze_website_content_async, scrape_penalty
 from services.moderation import validate_review_text, spam_score, auto_status, DUPLICATE_WINDOW_HOURS
 from services.search_limit import init_quota, check_and_increment, reset_quota
@@ -24,8 +26,10 @@ from services.technical_checks import run_technical_checks, extract_tech_signals
 from services.cache import get_cached_trust, set_cached_trust, invalidate_trust_cache
 from services.domain_extractor import extract_domain, is_natural_language
 from services.score_explainer import build_explanation
-
-load_dotenv()
+from services.ai_summary import generate_summary
+from services.ai_moderation import score_review, combined_moderation_decision
+from services.ai_content_analyzer import analyze_content
+from services.typosquatting import check_typosquatting
 
 # ── CONFIG ────────────────────────────────────────────────
 MONGO_URL  = os.getenv("MONGO_URL",  "mongodb://localhost:27017")
@@ -177,7 +181,8 @@ async def get_rating_summary(domain: str) -> dict:
 def build_trust_result(domain, whois, gsb, scrape,
                         n_reports, n_upvotes, total_lost,
                         rating_summary: dict,
-                        tech: dict = None) -> dict:
+                        tech: dict = None,
+                        ai_content_penalty: int = 0) -> dict:
     """
     Builds the full honest trust result.
     - Only penalises on REAL data.
@@ -270,6 +275,9 @@ def build_trust_result(domain, whois, gsb, scrape,
             elif avg >= 3.0: pass
             elif avg >= 2.0: score -= 10; reasons.append(f"Low community rating ({avg}/5 stars)")
             else:            score -= 15; reasons.append(f"Very low community rating ({avg}/5 stars)")
+
+    # ── AI CONTENT PENALTY ────────────────────────────────
+    score -= min(ai_content_penalty, 20)
 
     score = max(0, min(score, 100))
 
@@ -431,9 +439,37 @@ async def get_website(domain: str, request: Request,
     except: pass
 
     rating_summary = await get_rating_summary(domain)
+
+    # ── Build homepage text for AI content analysis ───────
+    homepage_text = (
+        (scrape.get("title") or "") + " " +
+        (scrape.get("meta_description") or "") + " " +
+        " ".join(scrape.get("suspicious_keywords", []))
+    ).strip()
+
+    # ── Run AI calls (summary needs trust data — run after build) ─
+    ai_content, typosquat_result = await asyncio.gather(
+        analyze_content(homepage_text, domain),
+        asyncio.get_event_loop().run_in_executor(None, check_typosquatting, domain),
+    )
+
     trust = build_trust_result(domain, whois, gsb, scrape,
                                 n_reports, n_upvotes, total_lost, rating_summary,
-                                tech=tech)
+                                tech=tech,
+                                ai_content_penalty=ai_content.get("penalty", 0))
+
+    # ── Generate AI summary (needs trust score/level from above) ─
+    ai_sum = await generate_summary(
+        domain=domain,
+        trust_score=trust["trust_score"],
+        trust_level=trust["trust_level"],
+        domain_age_days=whois.get("domain_age_days") if whois else None,
+        is_blacklisted=bool(gsb and gsb.get("flagged")),
+        n_reports=n_reports,
+        n_reviews=rating_summary.get("total_reviews", 0),
+        avg_rating=rating_summary.get("average_rating"),
+        verified_checks=trust["verified_checks"],
+    )
 
     try:
         await websites.update_one({"domain": domain},
@@ -487,6 +523,8 @@ async def get_website(domain: str, request: Request,
         ),
         "last_checked_at": datetime.utcnow().isoformat(),
         "searches_remaining": quota["remaining"],
+        "ai_summary": ai_sum,
+        "typosquat_warning": typosquat_result,
     }
 
     # Cache for guest users (1 hour TTL)
@@ -529,7 +567,8 @@ async def submit_review(domain: str, body: ReviewCreate,
     except: pass
 
     sp = spam_score(body.review_text, body.rating, ip, recent_from_ip)
-    status = auto_status(sp)
+    ai_mod = await score_review(body.review_text, body.rating, domain)
+    status = combined_moderation_decision(sp, ai_mod.get("quality_score", 50), ai_mod.get("classification", "unknown"))
 
     doc = {
         "domain":            domain,
@@ -549,6 +588,8 @@ async def submit_review(domain: str, body: ReviewCreate,
         "helpful_votes":     0,
         "verified_flag":     len(body.proof_urls) > 0,  # pre-flag for admin review
         "spam_score":        sp,
+        "ai_quality_score":  ai_mod.get("quality_score"),
+        "ai_classification": ai_mod.get("classification"),
         "status":            status,
         "created_at":        datetime.utcnow(),
         "updated_at":        datetime.utcnow(),
@@ -571,7 +612,7 @@ async def submit_review(domain: str, body: ReviewCreate,
     return {
         "id": str(result.inserted_id),
         "status": status,
-        "message": "Review submitted" if status == "pending"
+        "message": "Review submitted" if status == "approved"
                    else "Review flagged for moderation" if status == "flagged"
                    else "Review could not be published",
     }
