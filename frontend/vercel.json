@@ -1,12 +1,12 @@
 {
   "rewrites": [
-    { "source": "/auth/:path*",     "destination": "https://truxera-api.onrender.com/auth/:path*" },
-    { "source": "/website/:path*",  "destination": "https://truxera-api.onrender.com/website/:path*" },
-    { "source": "/websites/:path*", "destination": "https://truxera-api.onrender.com/websites/:path*" },
-    { "source": "/report/:path*",   "destination": "https://truxera-api.onrender.com/report/:path*" },
-    { "source": "/reports/:path*",  "destination": "https://truxera-api.onrender.com/reports/:path*" },
-    { "source": "/review/:path*",   "destination": "https://truxera-api.onrender.com/review/:path*" },
-    { "source": "/admin/:path*",    "destination": "https://truxera-api.onrender.com/admin/:path*" },
-    { "source": "/upload/:path*",   "destination": "https://truxera-api.onrender.com/upload/:path*" }
+    { "source": "/auth/:path*",     "destination": "https://truxera.onrender.com/auth/:path*" },
+    { "source": "/website/:path*",  "destination": "https://truxera.onrender.com/website/:path*" },
+    { "source": "/websites/:path*", "destination": "https://truxera.onrender.com/websites/:path*" },
+    { "source": "/report/:path*",   "destination": "https://truxera.onrender.com/report/:path*" },
+    { "source": "/reports/:path*",  "destination": "https://truxera.onrender.com/reports/:path*" },
+    { "source": "/review/:path*",   "destination": "https://truxera.onrender.com/review/:path*" },
+    { "source": "/admin/:path*",    "destination": "https://truxera.onrender.com/admin/:path*" },
+    { "source": "/upload/:path*",   "destination": "https://truxera.onrender.com/upload/:path*" }
   ]
 }
